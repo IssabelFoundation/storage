@@ -1,0 +1,265 @@
+#!/bin/bash
+# +----------------------------------------------------------------------+
+# | Issabel version 4.0                                                  |
+# | http://www.issabel.org                                               |
+# +----------------------------------------------------------------------+
+# | Copyright (c) 2018 Issabel Foundation                                |
+# +----------------------------------------------------------------------+
+# | The contents of this file are subject to the General Public License  |
+# | (GPL) Version 2 (the "License"); you may not use this file except in |
+# | compliance with the License. You may obtain a copy of the License at |
+# | http://www.opensource.org/licenses/gpl-license.php                   |
+# |                                                                      |
+# | Software distributed under the License is distributed on an "AS IS"  |
+# | basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See  |
+# | the License for the specific language governing rights and           |
+# | limitations under the License.                                       |
+# +----------------------------------------------------------------------+
+# $Id: storage, Sat 01 Dec 2018 04:11:09 PM EST, nicolas@issabel.com
+
+PARSED_OPTIONS=$(getopt -n "$0"  -o a:hld:f: --long "action:,help,list,device:,format:"  -- "$@")
+
+function parse_args {
+        if [ $? -ne 0 ];
+        then
+                >&2 echo "ERROR getting args"
+                exit 1
+        fi
+        eval set -- "$PARSED_OPTIONS"
+
+        while true
+        do
+                case "$1" in
+                -h|--help)
+                        print_usage
+                        shift;;
+                -l|--list)
+                        print_list
+                        exit
+                        shift;;
+                -a|--action)
+                        if [ -n "$2" ];
+                        then
+                            ACTION=$2
+                        else
+                            >&2 echo "ERROR: No action specified"
+                            exit 1
+                        fi
+                        shift 2;;
+                -d|--device)
+                        if [ -n "$2" ];
+                        then
+                            DEVICE=$2
+                        else
+                            >&2 echo "ERROR: No device specified"
+                            exit 1
+                        fi
+                        shift 2;;
+                -f|--format)
+                        if [ -n "$2" ];
+                        then
+                             FORMAT=$2
+                        else
+                             >&2 echo "ERROR: No format specified"
+                             exit 1
+                        fi
+                        shift 2;;
+                 --)
+                        shift
+                        break;;
+                 *)
+                        >&2 echo "Invalid option $1"
+                        print_usage
+                        exit 1 ;;
+                esac
+        done
+}
+
+function set_drive_bus {
+    # returns bus for storage, either USB or SD
+    local BUS=''
+    udevadm info --query=all --name=$1 | grep ID_BUS | grep usb >/dev/null
+    if [ $? -eq 0 ]; then
+        BUS='usb'
+    else
+        udevadm info --query=all --name=$1 | grep ID_PATH_TAG | grep _sd >/dev/null
+        if [ $? -eq 0 ]; then
+            BUS='sd'
+        fi
+    fi
+    echo "$BUS"
+}
+
+function print_list {
+    lsblk -ln | egrep -v 'mmcblk1rpmb|mmcblk1boot0|mmcblk1boot1' | while read LINE; do 
+        DEV=`echo $LINE | awk '{print $1}'`;
+        BUS=$(set_drive_bus $DEV)
+        if [ "$BUS" = "usb" ] || [ "$BUS" = "sd" ] ; then
+            TYPE=''
+            for PART in `lsblk -ln | grep ^$DEV | grep part | awk '{print $1}'`
+            do
+                #echo "parted -m /dev/$PART print 2>/dev/null| tail -n 1 | awk -F\: '{ print $5}'"
+                PT=`parted -m /dev/$PART print 2>/dev/null| tail -n 1 | awk -F\: '{ print $5}'`
+                TYPE="$TYPE,$PT"
+            done
+            TYPE="${TYPE:1}"
+            echo "$TYPE $LINE"
+        fi
+    done
+}
+
+function print_usage {
+    echo -e "Perform storage actions"
+    echo -e "-a/--action [format|mount|umount]\t\t\t\t Action to perform over storage"
+    echo -e "-d/--device <device>\t\t\t\t Device to perform action on"
+    echo -e "-f/--format [vfat|ext4]\t\t\t\t format to use when action is format"
+}
+
+function perform_action {
+
+    if [ "$DEVICE" == "" ]; then
+        print_usage
+        exit
+    fi
+
+    if [ "$ACTION" == "umount" ]; then
+
+        # only work on usb drives and sd cards
+        BUS=$(set_drive_bus $DEVICE)
+        if [ "$BUS" = "usb" ] || [ "$BUS" = "sd" ] ; then
+
+            umount /dev/$DEVICE;
+
+            if [ $? -eq 0 ]; then
+
+                sed -i "/^\/dev\/$DEVICE/d" /etc/fstab
+
+                return 0
+            else
+                return 1
+            fi
+        else
+            return 1
+        fi
+
+    elif [ "$ACTION" == "mount" ]; then
+
+        # only work on usb drives and sd cards
+        BUS=$(set_drive_bus $DEVICE)
+        if [ "$BUS" = "usb" ] || [ "$BUS" = "sd" ] ; then
+            MOUNTPOINT=`lsblk -r | grep $DEVICE | awk '{print $7}'`
+
+            eval $(blkid -o udev /dev/${DEVICE} | grep -i -e "ID_FS_LABEL" -e "ID_FS_TYPE")
+
+            if [ "x$MOUNTPOINT" != "x" ]; then
+                >&2 echo "Already mounted"
+                exit 1
+            fi
+
+            OPTS="rw,relatime"
+            DOCHOWN=0
+
+            if [[ ${ID_FS_TYPE} == "vfat" ]]; then
+                ASTERISKUID=$(id -u asterisk)
+                ASTERISKGID=$(id -g asterisk)
+                OPTS+=",users,umask=000,uid=$ASTERISKUID,gid=$ASTERISKGID,shortname=mixed,utf8=1,flush"
+            else
+                DOCHOWN=1
+            fi
+
+            mount -o $OPTS /dev/$DEVICE /var/spool/asterisk
+
+            if [ $? -eq 0 ]; then
+
+                if [ ! -d /var/spool/asterisk/dictate ]; then
+                    mkdir /var/spool/asterisk/dictate
+                fi
+
+                if [ ! -d /var/spool/asterisk/meetme ]; then
+                    mkdir /var/spool/asterisk/meetme
+                fi
+
+                if [ ! -d /var/spool/asterisk/monitor ]; then
+                    mkdir /var/spool/asterisk/monitor
+                fi
+
+                if [ ! -d /var/spool/asterisk/outgoing ]; then
+                    mkdir /var/spool/asterisk/outgoing
+                fi
+
+                if [ ! -d /var/spool/asterisk/system ]; then
+                    mkdir /var/spool/asterisk/system
+                fi
+
+                if [ ! -d /var/spool/asterisk/tmp ]; then
+                    mkdir /var/spool/asterisk/tmp
+                fi
+
+                if [ ! -d /var/spool/asterisk/voicemail ]; then
+                    mkdir /var/spool/asterisk/voicemail
+                fi
+
+                mount --bind /var/spool /mnt
+                rsync -avhW --no-compress --progress /mnt/asterisk/ /var/spool/asterisk/
+                umount /mnt
+
+                grep "/dev/$DEVICE" /etc/fstab
+                if [ $? -eq 1 ]; then
+                    FSTAB="/dev/$DEVICE /var/spool/asterisk auto nosuid,nodev,nofail,x-systemd.device-timeout=1 0 0"
+                    echo $FSTAB >>/etc/fstab
+                fi
+
+                if [ $DOCHOWN = 1 ]; then
+                    chown -R asterisk.asterisk /var/spool/asterisk
+                fi
+
+            else
+                #error mounting
+
+                echo "Error mounting"
+                return 1
+            fi
+
+            return 0
+        else
+            return 1
+        fi
+
+    elif [ "$ACTION" == "format" ]; then
+
+        # only format usb thumb drives
+        BUS=$(set_drive_bus $DEVICE)
+        if [ "$BUS" = "usb" ] || [ "$BUS" = "sd" ] ; then
+            if [ "x$FORMAT" == "x" ]; then 
+                FORMAT='vfat';
+            fi
+
+            MOUNTPOINT=`lsblk -r | grep $DEVICE | awk '{print $7}'`
+            if [ "x$MOUNTPOINT" != "x" ]; then
+                umount /dev/$DEVICE;
+            fi
+       
+            wipefs -a /dev/$DEVICE
+
+            if [ $FORMAT == "vfat" ]; then
+                parted -s /dev/$DEVICE mklabel msdos mkpart primary fat32 0% 100%
+                mkfs.vfat /dev/${DEVICE}1
+            elif [ $FORMAT == "ext4" ]; then
+                parted -s /dev/$DEVICE mklabel gpt mkpart primary ext4 0% 100%
+                yes | mkfs.ext4 -q /dev/${DEVICE}1 
+            fi
+            return 0
+        else
+            return 1
+        fi
+
+    else
+        print_usage;
+    fi
+    return 0
+}
+
+(
+parse_args
+perform_action
+) 

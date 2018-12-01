@@ -1,0 +1,7 @@
+[Unit]
+Description=Storage Monitor Service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/usr/local/bin/storage.sh 2>&1'
+

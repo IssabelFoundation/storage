@@ -1,0 +1,8 @@
+[Unit]
+Description=Storage Module Monitor
+
+[Path]
+PathChanged=/usr/share/issabel/storage/
+
+[Install]
+WantedBy=multi-user.target

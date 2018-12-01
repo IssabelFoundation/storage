@@ -1,0 +1,21 @@
+<html>
+<header>
+  <link rel="stylesheet" href="/themes/{$THEMENAME}/styles.css">
+  <link rel="stylesheet" href="/themes/{$THEMENAME}/help.css">
+</header>
+<body>
+
+<h1>{$node_name}</h1>
+
+<p>This module shows you all removable storage devices on the system and lets you quickly partition and format or mount a drive in the main spool area of the system, so all recordings and voicemails are stored insed it.</p>
+
+<p>It will show USB mounted drivers and MicroSD cards for Issabel compatible hardware</p>
+
+
+
+<div class="hlp_figures"><img src="../modules/{$node_id}/images/storage1.png" border="0" />
+<p>Figure 1</p></div>
+
+
+</body>
+</html>
